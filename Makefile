@@ -1,4 +1,3 @@
-CMD = ./cmd
 TEST = ./test
 BIN = ./bin/rivet
 
@@ -9,15 +8,13 @@ clean:
 	rm -rf ./bin
 
 tests:
-	go test ${CMD}/db
-	go test ${CMD}/resp
-	go test ${CMD}
+	go test ./server
 
 dev:
-	go run ${CMD}
+	go run ./server
 
 build:
-	go build -o ${BIN} ${CMD}
+	go build -o ${BIN} ./server
 
 start: clean build
 	${BIN}

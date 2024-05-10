@@ -1,8 +1,7 @@
 # Rivet
 
-Rivet is an embedded key/value store written in Go. The implementation is heavily inspired by 
-[bbolt](https://github.com/etcd-io/bbolt) and is made for educational purposes to get to
-know more about storage engines.
+Rivet is a key/value database implementing [kvql](https://github.com/c4pt0r/kvql), an SQL-like
+query language.
 
 ## Installation
 ```sh
