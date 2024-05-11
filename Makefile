@@ -5,6 +5,7 @@ install:
 	go mod download
 
 clean:
+	rm -rf ./rivet-data
 	rm -rf ./bin
 
 tests:
