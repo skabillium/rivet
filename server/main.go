@@ -4,9 +4,27 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"log/slog"
 	"net"
+
+	"github.com/c4pt0r/kvql"
 )
+
+type Engine struct {
+}
+
+func NewEngine() *Engine {
+	return &Engine{}
+}
+
+func (ng *Engine) Execute(query string) (any, error) {
+	parser := kvql.NewParser(query)
+	stmt, err := parser.Parse()
+	if err != nil {
+		return nil, err
+	}
+
+	return "Executing statement: " + stmt.Name(), nil
+}
 
 type Config struct {
 	Address string
@@ -14,6 +32,7 @@ type Config struct {
 
 type Server struct {
 	Config
+	*Engine
 	Connections int
 	ln          net.Listener
 	quitCh      chan struct{}
@@ -22,6 +41,7 @@ type Server struct {
 func NewServer(config Config) *Server {
 	return &Server{
 		Config:      config,
+		Engine:      NewEngine(),
 		Connections: 0,
 		quitCh:      make(chan struct{}),
 	}
@@ -46,7 +66,7 @@ func (s *Server) acceptLoop() error {
 	for {
 		conn, err := s.ln.Accept()
 		if err != nil {
-			slog.Error("accept error", "err", err)
+			log.Println("[ERROR]:", err)
 			continue
 		}
 		go s.handleConnection(conn)
@@ -65,8 +85,17 @@ func (s *Server) handleConnection(conn net.Conn) {
 			break
 		}
 
-		msg := string(buf[:n])
-		fmt.Println("Message:", msg)
+		message := string(buf[:n])
+		res, err := s.Engine.Execute(message)
+		if err != nil {
+			conn.Write([]byte("[ERROR]: " + err.Error() + "\n"))
+		} else {
+			if res != nil {
+				conn.Write([]byte(fmt.Sprintln(res)))
+			} else {
+				conn.Write([]byte("OK \n"))
+			}
+		}
 	}
 }
 
