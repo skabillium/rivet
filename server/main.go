@@ -14,6 +14,8 @@ import (
 	"go.etcd.io/bbolt"
 )
 
+const RivetVersion = "0.0.1"
+
 type KV struct {
 	db     *bbolt.DB
 	bucket []byte
@@ -66,6 +68,19 @@ func KVInit(db *bbolt.DB) (*KV, error) {
 		return nil, err
 	}
 	return kv, nil
+}
+
+func (kv *KV) Keys() []string {
+	var keys []string
+	kv.db.View(func(tx *bbolt.Tx) error {
+		buck := tx.Bucket(kv.bucket)
+		buck.ForEach(func(k, v []byte) error {
+			keys = append(keys, string(k))
+			return nil
+		})
+		return nil
+	})
+	return keys
 }
 
 func (kv *KV) Get(key []byte) ([]byte, error) {
@@ -130,8 +145,17 @@ func (kv *KV) Close() {
 	kv.db.Close()
 }
 
-func Execute(storage kvql.Storage, query string) ([][]kvql.Column, error) {
-	query = strings.TrimSpace(query)
+func ExecuteCommand(kv *KV, command string) (any, error) {
+	switch command {
+	case ".version":
+		return RivetVersion, nil
+	case ".keys":
+		return kv.Keys(), nil
+	}
+	return nil, fmt.Errorf("unknown command '%s'", command)
+}
+
+func ExecuteQuery(storage kvql.Storage, query string) ([][]kvql.Column, error) {
 	opt := kvql.NewOptimizer(query)
 	plan, err := opt.BuildPlan(storage)
 	if err != nil {
@@ -227,8 +251,23 @@ func (s *Server) handleConnection(conn net.Conn) {
 			break
 		}
 
-		message := string(buf[:n])
-		rows, err := Execute(s.KV, message)
+		message := strings.TrimSpace(string(buf[:n]))
+		if len(message) == 0 {
+			continue
+		}
+
+		// Check if it is a command
+		if message[0] == '.' {
+			res, err := ExecuteCommand(s.KV, message)
+			if err != nil {
+				conn.Write([]byte(fmt.Sprintln("[ERROR]:", err)))
+			} else {
+				conn.Write([]byte(fmt.Sprintln(res)))
+			}
+			continue
+		}
+
+		rows, err := ExecuteQuery(s.KV, message)
 		if err != nil {
 			conn.Write([]byte("[ERROR]: " + err.Error() + "\n"))
 			continue
