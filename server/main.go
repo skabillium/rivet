@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"log"
@@ -16,7 +17,42 @@ type KV struct {
 	bucket []byte
 }
 
-type KVCursor struct{}
+type KVCursor struct {
+	prefix  []byte
+	currKey []byte
+	currVal []byte
+	bucket  []byte
+	db      *bbolt.DB
+}
+
+func (c *KVCursor) Seek(prefix []byte) error {
+	c.prefix = prefix
+	return c.db.View(func(tx *bbolt.Tx) error {
+		cursor := tx.Bucket(c.bucket).Cursor()
+		k, v := cursor.Seek(prefix)
+		c.currKey = k
+		c.currVal = v
+		return nil
+	})
+}
+
+func (c *KVCursor) Next() (key []byte, value []byte, err error) {
+	var prevKey, prevVal []byte
+	c.db.View(func(tx *bbolt.Tx) error {
+		prevKey = c.currKey
+		prevVal = c.currVal
+		cursor := tx.Bucket(c.bucket).Cursor()
+		cursor.Seek(prevKey)
+		k, v := cursor.Next()
+		if bytes.HasPrefix(k, c.prefix) {
+			c.currKey, c.currVal = k, v
+		} else {
+			c.prefix, c.currKey, c.currVal = nil, nil, nil
+		}
+		return nil
+	})
+	return prevKey, prevVal, nil
+}
 
 func KVInit(db *bbolt.DB) (*KV, error) {
 	kv := &KV{db: db, bucket: []byte("data")}
@@ -53,15 +89,46 @@ func (kv *KV) Delete(key []byte) error {
 	})
 }
 
-func (kv *KV) BatchPut(kvs []kvql.KVPair) error { return nil }
-func (kv *KV) BatchDelete(keys [][]byte) error  { return nil }
-func (kv *KV) Cursor() (kvql.Cursor, error)     { return nil, nil }
+func (kv *KV) BatchPut(kvs []kvql.KVPair) error {
+	return kv.db.Update(func(tx *bbolt.Tx) error {
+		buck := tx.Bucket(kv.bucket)
+		var err error
+		for _, pair := range kvs {
+			err = buck.Put(pair.Key, pair.Value)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (kv *KV) BatchDelete(keys [][]byte) error {
+	return kv.db.Update(func(tx *bbolt.Tx) error {
+		buck := tx.Bucket(kv.bucket)
+		var err error
+		for _, k := range keys {
+			err = buck.Delete(k)
+			if err != nil {
+				return err
+			}
+		}
+		return nil
+	})
+}
+
+func (kv *KV) Cursor() (kvql.Cursor, error) {
+	return &KVCursor{
+		bucket: kv.bucket,
+		db:     kv.db,
+	}, nil
+}
 
 func (kv *KV) Close() {
 	kv.db.Close()
 }
 
-func Execute(storage kvql.Storage, query string) (any, error) {
+func Execute(storage kvql.Storage, query string) ([][]kvql.Column, error) {
 	query = strings.TrimSpace(query)
 	opt := kvql.NewOptimizer(query)
 	plan, err := opt.BuildPlan(storage)
@@ -79,20 +146,6 @@ func Execute(storage kvql.Storage, query string) (any, error) {
 		return nil, nil
 	}
 	ctx.Clear()
-	for _, row := range rows {
-		for _, col := range row {
-			switch col := col.(type) {
-			case int, int32, int64:
-				fmt.Printf("%d ", col)
-			case []byte:
-				fmt.Printf("%s ", string(col))
-			default:
-				fmt.Printf("%v ", col)
-			}
-		}
-		fmt.Println()
-	}
-
 	return rows, nil
 }
 
@@ -166,16 +219,34 @@ func (s *Server) handleConnection(conn net.Conn) {
 		}
 
 		message := string(buf[:n])
-		res, err := Execute(s.KV, message)
+		rows, err := Execute(s.KV, message)
 		if err != nil {
 			conn.Write([]byte("[ERROR]: " + err.Error() + "\n"))
-		} else {
-			if res != nil {
-				conn.Write([]byte(fmt.Sprintln(res)))
-			} else {
-				conn.Write([]byte("OK \n"))
-			}
+			continue
 		}
+
+		if rows == nil {
+			conn.Write([]byte("OK \n"))
+			continue
+		}
+
+		results := make([]string, len(rows))
+		for _, row := range rows {
+			var res string
+			for _, col := range row {
+				switch col := col.(type) {
+				case int, int32, int64:
+					res += fmt.Sprintf("%d ", col)
+				case []byte:
+					res += fmt.Sprintf("%s ", string(col))
+				default:
+					res += fmt.Sprintf("%v ", col)
+				}
+			}
+			results = append(results, res)
+		}
+
+		conn.Write([]byte(fmt.Sprintln(results)))
 	}
 }
 
