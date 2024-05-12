@@ -2,10 +2,12 @@ package main
 
 import (
 	"bytes"
+	"errors"
 	"fmt"
 	"io"
 	"log"
 	"net"
+	"os"
 	"strings"
 
 	"github.com/c4pt0r/kvql"
@@ -177,6 +179,13 @@ func (s *Server) Start() error {
 	s.ln = ln
 
 	// Init db
+	if !FsExists("rivet-data") {
+		err = os.Mkdir("rivet-data", 0755)
+		if err != nil {
+			log.Fatal(err)
+		}
+	}
+
 	db, err := bbolt.Open("rivet-data/default.db", 0600, nil)
 	if err != nil {
 		return err
@@ -248,6 +257,12 @@ func (s *Server) handleConnection(conn net.Conn) {
 
 		conn.Write([]byte(fmt.Sprintln(results)))
 	}
+}
+
+// Check if a given file/dir exists
+func FsExists(filename string) bool {
+	_, err := os.Stat(filename)
+	return !errors.Is(err, os.ErrNotExist)
 }
 
 func main() {
