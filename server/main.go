@@ -5,7 +5,6 @@ import (
 	"io"
 	"log"
 	"net"
-	"os"
 	"path"
 	"skabillium/rivet/storage"
 	"strings"
@@ -14,9 +13,6 @@ import (
 	"github.com/c4pt0r/kvql"
 	"github.com/hashicorp/raft"
 )
-
-const RivetVersion = "0.0.1"
-const DataDir = "rivet-data"
 
 func ExecuteCommand(kv storage.Storage, command string) (any, error) {
 	switch command {
@@ -188,17 +184,15 @@ func WriteError(conn net.Conn, err error) {
 
 func assert(cond bool, message any) {
 	if !cond {
-		panic(fmt.Sprint("Assertion failed:", message))
+		panic(fmt.Sprint("Assertion failed: ", message))
 	}
 }
 
 func main() {
-	err := os.MkdirAll("rivet-data", os.ModePerm)
-	if err != nil {
-		log.Fatal(err)
-	}
+	cliOpts := ParseCLIOptions()
 
-	server := NewServer(Config{Address: "localhost:5678"})
+	var err error
+	server := NewServer(Config{Address: "localhost:" + cliOpts.serverPort})
 	server.KV, err = storage.StorageInit(storage.InitStorageOptions{
 		Disk: &storage.DiskStorageOptions{
 			File: "rivet-data/default.db",
@@ -207,11 +201,7 @@ func main() {
 	assert(err == nil, err)
 
 	fsm := &RivetFsm{kv: server.KV}
-
-	nodeId := "raft_1"
-	raftPort := "8765"
-
-	r, err := RaftInit(path.Join(DataDir, nodeId), "raft_1", "localhost:"+raftPort, fsm)
+	r, err := RaftInit(path.Join(DataDir, cliOpts.raftNodeId), "raft_1", "localhost:"+cliOpts.raftPort, fsm)
 	if err != nil {
 		log.Fatal(err)
 	}
