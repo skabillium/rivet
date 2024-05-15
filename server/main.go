@@ -8,13 +8,18 @@ import (
 	"log"
 	"net"
 	"os"
+	"path"
 	"strings"
+	"time"
 
 	"github.com/c4pt0r/kvql"
+	"github.com/hashicorp/raft"
+	raftboltdb "github.com/hashicorp/raft-boltdb"
 	"go.etcd.io/bbolt"
 )
 
 const RivetVersion = "0.0.1"
+const DataDir = "rivet-data"
 
 type KV struct {
 	db     *bbolt.DB
@@ -157,6 +162,7 @@ func ExecuteCommand(kv *KV, command string) (any, error) {
 
 func ExecuteQuery(storage kvql.Storage, query string) ([][]kvql.Column, error) {
 	opt := kvql.NewOptimizer(query)
+
 	plan, err := opt.BuildPlan(storage)
 	if err != nil {
 		return nil, err
@@ -175,6 +181,13 @@ func ExecuteQuery(storage kvql.Storage, query string) ([][]kvql.Column, error) {
 	return rows, nil
 }
 
+func Execute(kv *KV, message string) (any, error) {
+	if message[0] == '.' {
+		return ExecuteCommand(kv, message)
+	}
+	return ExecuteQuery(kv, message)
+}
+
 type Config struct {
 	Address string
 }
@@ -182,6 +195,7 @@ type Config struct {
 type Server struct {
 	Config
 	*KV
+	raft        *raft.Raft
 	Connections int
 	ln          net.Listener
 	quitCh      chan struct{}
@@ -201,23 +215,6 @@ func (s *Server) Start() error {
 		return err
 	}
 	s.ln = ln
-
-	// Init db
-	if !FsExists("rivet-data") {
-		err = os.Mkdir("rivet-data", 0755)
-		if err != nil {
-			log.Fatal(err)
-		}
-	}
-
-	db, err := bbolt.Open("rivet-data/default.db", 0600, nil)
-	if err != nil {
-		return err
-	}
-	s.KV, err = KVInit(db)
-	if err != nil {
-		return err
-	}
 	defer s.KV.Close()
 
 	go s.acceptLoop()
@@ -256,7 +253,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 			continue
 		}
 
-		// Check if it is a command
 		if message[0] == '.' {
 			res, err := ExecuteCommand(s.KV, message)
 			if err != nil {
@@ -267,45 +263,172 @@ func (s *Server) handleConnection(conn net.Conn) {
 			continue
 		}
 
-		rows, err := ExecuteQuery(s.KV, message)
+		parser := kvql.NewParser(message)
+		stmt, err := parser.Parse()
 		if err != nil {
-			conn.Write([]byte("[ERROR]: " + err.Error() + "\n"))
+			WriteError(conn, err)
 			continue
 		}
 
-		if rows == nil {
-			conn.Write([]byte("OK \n"))
-			continue
-		}
-
-		results := make([]string, len(rows))
-		for _, row := range rows {
-			var res string
-			for _, col := range row {
-				switch col := col.(type) {
-				case int, int32, int64:
-					res += fmt.Sprintf("%d ", col)
-				case []byte:
-					res += fmt.Sprintf("%s ", string(col))
-				default:
-					res += fmt.Sprintf("%v ", col)
-				}
+		if stmt.Name() == "SELECT" {
+			rows, err := ExecuteQuery(s.KV, message)
+			if err != nil {
+				conn.Write([]byte("[ERROR]: " + err.Error() + "\n"))
+				continue
 			}
-			results = append(results, res)
+
+			if rows == nil {
+				conn.Write([]byte("OK \n"))
+				continue
+			}
+
+			results := make([]string, len(rows))
+			for _, row := range rows {
+				var res string
+				for _, col := range row {
+					switch col := col.(type) {
+					case int, int32, int64:
+						res += fmt.Sprintf("%d ", col)
+					case []byte:
+						res += fmt.Sprintf("%s ", string(col))
+					default:
+						res += fmt.Sprintf("%v ", col)
+					}
+				}
+				results = append(results, res)
+			}
+
+			conn.Write([]byte(fmt.Sprintln(results)))
 		}
 
-		conn.Write([]byte(fmt.Sprintln(results)))
+		future := s.raft.Apply([]byte(message), 500*time.Millisecond)
+		if err := future.Error(); err != nil {
+			WriteError(conn, fmt.Errorf("could not apply: %s", err))
+		}
+
+		e := future.Response()
+		if e != nil {
+			WriteError(conn, fmt.Errorf("Could not apply (internal): %s", e))
+		}
+
 	}
 }
 
-// Check if a given file/dir exists
-func FsExists(filename string) bool {
-	_, err := os.Stat(filename)
-	return !errors.Is(err, os.ErrNotExist)
+func WriteError(conn net.Conn, err error) {
+	conn.Write([]byte(fmt.Sprintln("[ERROR:", err)))
+}
+
+func assert(cond bool, message any) {
+	if !cond {
+		panic(fmt.Sprint("Assertion failed:", message))
+	}
+}
+
+type SnapshotNoop struct{}
+
+func (s *SnapshotNoop) Persist(sink raft.SnapshotSink) error {
+	return sink.Cancel()
+}
+
+func (s *SnapshotNoop) Release() {}
+
+type RivetFsm struct {
+	kv *KV
+}
+
+func (rf *RivetFsm) Apply(log *raft.Log) any {
+	switch log.Type {
+	case raft.LogCommand:
+		message := string(log.Data)
+		_, err := Execute(rf.kv, message)
+		assert(err == nil, err)
+	default:
+		panic(fmt.Errorf("unknown log type %#v", log.Type))
+	}
+	return nil
+}
+
+func (rf *RivetFsm) Restore(rc io.ReadCloser) error {
+	return errors.New("nothing to restore")
+}
+
+func (rf *RivetFsm) Snapshot() (raft.FSMSnapshot, error) {
+	return &SnapshotNoop{}, nil
+}
+
+func RaftInit(dir, nodeId, address string, rf *RivetFsm) (*raft.Raft, error) {
+	os.MkdirAll(dir, os.ModePerm)
+	store, err := raftboltdb.NewBoltStore(path.Join(dir, "raft"))
+	if err != nil {
+		return nil, err
+	}
+
+	snapshots, err := raft.NewFileSnapshotStore(path.Join(dir, "snapshot"), 2, os.Stderr)
+	if err != nil {
+		return nil, err
+	}
+
+	tcpAddress, err := net.ResolveTCPAddr("tcp", address)
+	if err != nil {
+		return nil, err
+	}
+
+	transport, err := raft.NewTCPTransport(address, tcpAddress, 10, time.Second*10, os.Stderr)
+	if err != nil {
+		return nil, err
+	}
+
+	config := raft.DefaultConfig()
+	config.LocalID = raft.ServerID(nodeId)
+
+	r, err := raft.NewRaft(config, rf, store, store, snapshots, transport)
+	if err != nil {
+		return nil, err
+	}
+
+	// All cluster instances start off as leaders, picking is done
+	// manually after startup, maybe we can change this later
+	r.BootstrapCluster(raft.Configuration{
+		Servers: []raft.Server{
+			{
+				ID:      raft.ServerID(nodeId),
+				Address: transport.LocalAddr(),
+			},
+		},
+	})
+
+	return r, nil
 }
 
 func main() {
+	err := os.MkdirAll("rivet-data", os.ModePerm)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	db, err := bbolt.Open("rivet-data/default.db", 0600, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
 	server := NewServer(Config{Address: "localhost:5678"})
+
+	server.KV, err = KVInit(db)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	fsm := &RivetFsm{kv: server.KV}
+
+	nodeId := "raft_1"
+	raftPort := "8765"
+
+	r, err := RaftInit(path.Join(DataDir, nodeId), "raft_1", "localhost:"+raftPort, fsm)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	server.raft = r
+
 	if err := server.Start(); err != nil {
 		log.Fatal(err)
 	}
