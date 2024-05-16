@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -125,11 +126,17 @@ func (s *Server) handleConnection(conn net.Conn) {
 		}
 
 		if message[0] == '.' {
+			// TODO: Fix this mess with continues
 			res, err := ExecuteCommand(s.KV, s.raft, message)
 			if err != nil {
-				conn.Write([]byte(fmt.Sprintln("[ERROR]:", err)))
+				WriteError(conn, err)
 			} else {
-				conn.Write([]byte(fmt.Sprintln(res)))
+				serialized, err := json.Marshal(res)
+				if err != nil {
+					WriteError(conn, errors.New("could not serialize response"))
+					continue
+				}
+				conn.Write(serialized)
 			}
 			continue
 		}
@@ -144,7 +151,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		if stmt.Name() == "SELECT" {
 			rows, err := ExecuteQuery(s.KV, message)
 			if err != nil {
-				conn.Write([]byte("[ERROR]: " + err.Error() + "\n"))
+				WriteError(conn, err)
 				continue
 			}
 
@@ -169,7 +176,13 @@ func (s *Server) handleConnection(conn net.Conn) {
 				results = append(results, res)
 			}
 
-			conn.Write([]byte(fmt.Sprintln(results)))
+			serialized, err := json.Marshal(results)
+			if err != nil {
+				WriteError(conn, errors.New("could not format response"))
+				continue
+			}
+
+			conn.Write(serialized)
 		}
 
 		future := s.raft.Apply([]byte(message), 500*time.Millisecond)
@@ -185,7 +198,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 }
 
 func WriteError(conn net.Conn, err error) {
-	conn.Write([]byte(fmt.Sprintln("[ERROR:", err)))
+	conn.Write([]byte(fmt.Sprintln("[ERROR]:", err)))
 }
 
 func assert(cond bool, message any) {

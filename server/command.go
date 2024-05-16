@@ -6,16 +6,16 @@ import (
 	"strings"
 )
 
-type CmdKind byte
+type CommandType byte
 
 const (
-	CmdVersion CmdKind = iota
+	CmdVersion CommandType = iota
 	CmdKeys
 	CmdAddFollower
 )
 
 type Command struct {
-	Kind   CmdKind
+	Kind   CommandType
 	Params map[string]string
 }
 
