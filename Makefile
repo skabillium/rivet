@@ -12,7 +12,7 @@ tests:
 	go test ./server
 
 dev:
-	go run ./server
+	go run ./server --node-id=node_1
 
 build:
 	go build -o ${BIN} ./server

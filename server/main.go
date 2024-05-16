@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -14,14 +15,27 @@ import (
 	"github.com/hashicorp/raft"
 )
 
-func ExecuteCommand(kv storage.Storage, command string) (any, error) {
-	switch command {
-	case ".version":
-		return RivetVersion, nil
-	case ".keys":
-		return kv.Keys(), nil
+func ExecuteCommand(kv storage.Storage, r *raft.Raft, command string) (any, error) {
+	cmd, err := ParseCommand(command)
+	if err != nil {
+		return nil, err
 	}
-	return nil, fmt.Errorf("unknown command '%s'", command)
+	switch cmd.Kind {
+	case CmdVersion:
+		return RivetVersion, nil
+	case CmdKeys:
+		return kv.Keys(), nil
+	case CmdAddFollower:
+		if r.State() != raft.Leader {
+			return nil, errors.New("cannot add follower to a non-leader node")
+		}
+		err := r.AddVoter(raft.ServerID(cmd.Params["node_id"]), raft.ServerAddress(cmd.Params["address"]), 0, 0).Error()
+		if err != nil {
+			return nil, err
+		}
+		return "OK", nil
+	}
+	return nil, nil
 }
 
 func ExecuteQuery(storage kvql.Storage, query string) ([][]kvql.Column, error) {
@@ -43,13 +57,6 @@ func ExecuteQuery(storage kvql.Storage, query string) ([][]kvql.Column, error) {
 	}
 	ctx.Clear()
 	return rows, nil
-}
-
-func Execute(kv storage.Storage, message string) (any, error) {
-	if message[0] == '.' {
-		return ExecuteCommand(kv, message)
-	}
-	return ExecuteQuery(kv, message)
 }
 
 type Config struct {
@@ -118,7 +125,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 		}
 
 		if message[0] == '.' {
-			res, err := ExecuteCommand(s.KV, message)
+			res, err := ExecuteCommand(s.KV, s.raft, message)
 			if err != nil {
 				conn.Write([]byte(fmt.Sprintln("[ERROR]:", err)))
 			} else {
@@ -174,7 +181,6 @@ func (s *Server) handleConnection(conn net.Conn) {
 		if e != nil {
 			WriteError(conn, fmt.Errorf("could not apply (internal): %s", e))
 		}
-
 	}
 }
 
@@ -190,18 +196,19 @@ func assert(cond bool, message any) {
 
 func main() {
 	cliOpts := ParseCLIOptions()
+	nodeDir := path.Join(DataDir, cliOpts.raftNodeId)
 
 	var err error
 	server := NewServer(Config{Address: "localhost:" + cliOpts.serverPort})
 	server.KV, err = storage.StorageInit(storage.InitStorageOptions{
 		Disk: &storage.DiskStorageOptions{
-			File: "rivet-data/default.db",
+			File: path.Join(nodeDir, "default.db"),
 		},
 	})
 	assert(err == nil, err)
 
 	fsm := &RivetFsm{kv: server.KV}
-	r, err := RaftInit(path.Join(DataDir, cliOpts.raftNodeId), "raft_1", "localhost:"+cliOpts.raftPort, fsm)
+	r, err := RaftInit(nodeDir, cliOpts.raftNodeId, "localhost:"+cliOpts.raftPort, fsm)
 	if err != nil {
 		log.Fatal(err)
 	}
