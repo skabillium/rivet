@@ -66,12 +66,12 @@ func (rf *RivetFsm) Apply(log *raft.Log) any {
 	switch log.Type {
 	case raft.LogCommand:
 		message := string(log.Data)
-		_, err := ExecuteQuery(rf.kv, message)
+		res, err := ExecuteQuery(rf.kv, message)
 		assert(err == nil, err)
+		return res
 	default:
 		panic(fmt.Errorf("unknown log type %#v", log.Type))
 	}
-	return nil
 }
 
 func (rf *RivetFsm) Restore(rc io.ReadCloser) error {

@@ -190,10 +190,14 @@ func (s *Server) handleConnection(conn net.Conn) {
 			WriteError(conn, fmt.Errorf("could not apply: %s", err))
 		}
 
-		e := future.Response()
-		if e != nil {
-			WriteError(conn, fmt.Errorf("could not apply (internal): %s", e))
+		res := future.Response()
+		serialized, err := json.Marshal(res)
+		if err != nil {
+			WriteError(conn, err)
+			continue
 		}
+
+		conn.Write(serialized)
 	}
 }
 
