@@ -61,7 +61,10 @@ func ExecuteQuery(storage kvql.Storage, query string) ([][]kvql.Column, error) {
 }
 
 type Config struct {
-	Address string
+	Address     string
+	User        string
+	Password    string
+	AuthEnabled bool
 }
 
 type Server struct {
@@ -104,8 +107,37 @@ func (s *Server) acceptLoop() error {
 			log.Println("[ERROR]:", err)
 			continue
 		}
+
+		if s.Config.AuthEnabled {
+			err = s.handleHandshake(conn)
+			if err != nil {
+				WriteError(conn, err)
+				conn.Close()
+				continue
+			}
+		}
 		go s.handleConnection(conn)
 	}
+}
+
+func (s *Server) handleHandshake(conn net.Conn) error {
+	buf := make([]byte, 1024)
+	n, err := conn.Read(buf)
+	if err != nil {
+		return err
+	}
+	message := strings.TrimSpace(string(buf[:n]))
+	cmd, err := ParseCommand(message)
+	if err != nil {
+		return err
+	}
+	if cmd.Kind != CmdAuth {
+		return errors.New("only 'auth' command allowed for handshake")
+	}
+	if cmd.Params["user"] != s.Config.User || cmd.Params["password"] != s.Config.Password {
+		return errors.New("invalid auth credentials")
+	}
+	return nil
 }
 
 func (s *Server) handleConnection(conn net.Conn) {
@@ -216,7 +248,12 @@ func main() {
 	nodeDir := path.Join(DataDir, cliOpts.raftNodeId)
 
 	var err error
-	server := NewServer(Config{Address: "localhost:" + cliOpts.serverPort})
+	server := NewServer(Config{
+		Address:     "localhost:" + cliOpts.serverPort,
+		User:        cliOpts.user,
+		Password:    cliOpts.password,
+		AuthEnabled: cliOpts.authEnabled,
+	})
 	server.KV, err = storage.StorageInit(storage.InitStorageOptions{
 		Disk: &storage.DiskStorageOptions{
 			File: path.Join(nodeDir, "default.db"),

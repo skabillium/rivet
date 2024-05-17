@@ -11,6 +11,7 @@ type CommandType byte
 const (
 	CmdVersion CommandType = iota
 	CmdKeys
+	CmdAuth
 	CmdAddFollower
 )
 
@@ -39,6 +40,11 @@ func ParseCommand(command string) (*Command, error) {
 		return &Command{Kind: CmdVersion}, nil
 	case ".keys":
 		return &Command{Kind: CmdKeys}, nil
+	case ".auth":
+		if params == nil || params["user"] == "" || params["password"] == "" {
+			return nil, errors.New("params 'user' and 'password' are required for auth command")
+		}
+		return &Command{Kind: CmdAuth, Params: params}, nil
 	case ".add_follower":
 		if params == nil || params["address"] == "" || params["node_id"] == "" {
 			return nil, errors.New("params 'address' and 'node_id' are required for add_follower command")
