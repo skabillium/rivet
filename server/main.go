@@ -168,7 +168,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 					WriteError(conn, errors.New("could not serialize response"))
 					continue
 				}
-				conn.Write(serialized)
+				Writeln(conn, serialized)
 			}
 			continue
 		}
@@ -188,7 +188,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 
 			if rows == nil {
-				conn.Write([]byte("OK \n"))
+				WriteOk(conn)
 				continue
 			}
 
@@ -214,7 +214,7 @@ func (s *Server) handleConnection(conn net.Conn) {
 				continue
 			}
 
-			conn.Write(serialized)
+			Writeln(conn, serialized)
 		}
 
 		future := s.raft.Apply([]byte(message), 500*time.Millisecond)
@@ -229,12 +229,21 @@ func (s *Server) handleConnection(conn net.Conn) {
 			continue
 		}
 
-		conn.Write(serialized)
+		Writeln(conn, serialized)
 	}
+}
+
+func WriteOk(conn net.Conn) {
+	conn.Write([]byte("OK\n"))
 }
 
 func WriteError(conn net.Conn, err error) {
 	conn.Write([]byte(fmt.Sprintln("[ERROR]:", err)))
+}
+
+func Writeln(conn net.Conn, b []byte) {
+	b = append(b, '\n')
+	conn.Write(b)
 }
 
 func assert(cond bool, message any) {
@@ -254,20 +263,22 @@ func main() {
 		Password:    cliOpts.password,
 		AuthEnabled: cliOpts.authEnabled,
 	})
-	server.KV, err = storage.StorageInit(storage.InitStorageOptions{
-		Disk: &storage.DiskStorageOptions{
+
+	initStorageOpts := storage.InitStorageOptions{}
+	if cliOpts.storage == "disk" {
+		initStorageOpts.Disk = &storage.DiskStorageOptions{
 			File: path.Join(nodeDir, "default.db"),
-		},
-	})
+		}
+	}
+
+	server.KV, err = storage.StorageInit(initStorageOpts)
 	assert(err == nil, err)
 
 	fsm := &RivetFsm{kv: server.KV}
-	r, err := RaftInit(nodeDir, cliOpts.raftNodeId, "localhost:"+cliOpts.raftPort, fsm)
+	server.raft, err = RaftInit(nodeDir, cliOpts.raftNodeId, "localhost:"+cliOpts.raftPort, fsm)
 	if err != nil {
 		log.Fatal(err)
 	}
-
-	server.raft = r
 
 	if err := server.Start(); err != nil {
 		log.Fatal(err)

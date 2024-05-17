@@ -1,8 +1,6 @@
 package storage
 
 import (
-	"errors"
-
 	"github.com/c4pt0r/kvql"
 )
 
@@ -25,5 +23,5 @@ func StorageInit(opts InitStorageOptions) (Storage, error) {
 	if opts.Disk != nil {
 		return NewDiskStorage(*opts.Disk)
 	}
-	return nil, errors.New("no other storage implemented")
+	return NewMemoryStorage(), nil
 }
