@@ -42,7 +42,7 @@ type DiskStorage struct {
 }
 
 func (kv *DiskStorage) Keys() []string {
-	var keys []string
+	keys := []string{}
 	kv.db.View(func(tx *bbolt.Tx) error {
 		buck := tx.Bucket(kv.bucket)
 		buck.ForEach(func(k, v []byte) error {

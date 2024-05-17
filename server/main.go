@@ -267,7 +267,7 @@ func main() {
 	})
 
 	initStorageOpts := storage.InitStorageOptions{}
-	if cliOpts.storage == "disk" {
+	if cliOpts.storage == StgDisk {
 		initStorageOpts.Disk = &storage.DiskStorageOptions{
 			File: path.Join(nodeDir, "default.db"),
 		}
