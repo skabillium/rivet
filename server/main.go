@@ -151,86 +151,88 @@ func (s *Server) handleConnection(conn net.Conn) {
 			}
 			break
 		}
-
 		message := strings.TrimSpace(string(buf[:n]))
 		if len(message) == 0 {
 			continue
 		}
+		s.handleMessage(conn, message)
+	}
+}
 
-		if message[0] == '.' {
-			// TODO: Fix this mess with continues
-			res, err := ExecuteCommand(s.KV, s.raft, message)
-			if err != nil {
-				WriteError(conn, err)
-			} else {
-				serialized, err := json.Marshal(res)
-				if err != nil {
-					WriteError(conn, errors.New("could not serialize response"))
-					continue
-				}
-				Writeln(conn, serialized)
-			}
-			continue
-		}
-
-		parser := kvql.NewParser(message)
-		stmt, err := parser.Parse()
+func (s *Server) handleMessage(conn net.Conn, message string) {
+	if message[0] == '.' {
+		res, err := ExecuteCommand(s.KV, s.raft, message)
 		if err != nil {
 			WriteError(conn, err)
-			continue
-		}
-
-		if stmt.Name() == "SELECT" {
-			rows, err := ExecuteQuery(s.KV, message)
+		} else {
+			serialized, err := json.Marshal(res)
 			if err != nil {
-				WriteError(conn, err)
-				continue
+				WriteError(conn, errors.New("could not serialize response"))
+				return
 			}
-
-			if rows == nil {
-				WriteOk(conn)
-				continue
-			}
-
-			results := make([]string, len(rows))
-			for _, row := range rows {
-				var res string
-				for _, col := range row {
-					switch col := col.(type) {
-					case int, int32, int64:
-						res += fmt.Sprintf("%d ", col)
-					case []byte:
-						res += fmt.Sprintf("%s ", string(col))
-					default:
-						res += fmt.Sprintf("%v ", col)
-					}
-				}
-				results = append(results, res)
-			}
-
-			serialized, err := json.Marshal(results)
-			if err != nil {
-				WriteError(conn, errors.New("could not format response"))
-				continue
-			}
-
 			Writeln(conn, serialized)
 		}
+		return
+	}
 
-		future := s.raft.Apply([]byte(message), 500*time.Millisecond)
-		if err := future.Error(); err != nil {
-			WriteError(conn, fmt.Errorf("could not apply: %s", err))
-		}
+	parser := kvql.NewParser(message)
+	stmt, err := parser.Parse()
+	if err != nil {
+		WriteError(conn, err)
+		return
+	}
 
-		res := future.Response()
-		serialized, err := json.Marshal(res)
+	if stmt.Name() == "SELECT" {
+		rows, err := ExecuteQuery(s.KV, message)
 		if err != nil {
 			WriteError(conn, err)
-			continue
+			return
+		}
+
+		if rows == nil {
+			WriteOk(conn)
+			return
+		}
+
+		results := make([]string, len(rows))
+		for _, row := range rows {
+			var res string
+			for _, col := range row {
+				switch col := col.(type) {
+				case int, int32, int64:
+					res += fmt.Sprintf("%d ", col)
+				case []byte:
+					res += fmt.Sprintf("%s ", string(col))
+				default:
+					res += fmt.Sprintf("%v ", col)
+				}
+			}
+			results = append(results, res)
+		}
+
+		serialized, err := json.Marshal(results)
+		if err != nil {
+			WriteError(conn, errors.New("could not format response"))
+			return
 		}
 
 		Writeln(conn, serialized)
+		return
 	}
+
+	future := s.raft.Apply([]byte(message), 500*time.Millisecond)
+	if err := future.Error(); err != nil {
+		WriteError(conn, fmt.Errorf("could not apply: %s", err))
+		return
+	}
+
+	res := future.Response()
+	serialized, err := json.Marshal(res)
+	if err != nil {
+		WriteError(conn, err)
+		return
+	}
+	Writeln(conn, serialized)
 }
 
 func WriteOk(conn net.Conn) {
