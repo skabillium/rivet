@@ -7,10 +7,12 @@ import (
 	"io"
 	"log"
 	"net"
+	"os"
 	"path"
 	"skabillium/rivet/storage"
 	"strings"
 	"time"
+	"unicode"
 
 	"github.com/c4pt0r/kvql"
 	"github.com/hashicorp/raft"
@@ -175,14 +177,7 @@ func (s *Server) handleMessage(conn net.Conn, message string) {
 		return
 	}
 
-	parser := kvql.NewParser(message)
-	stmt, err := parser.Parse()
-	if err != nil {
-		WriteError(conn, err)
-		return
-	}
-
-	if stmt.Name() == "SELECT" {
+	if isSelectStatement(message) {
 		rows, err := ExecuteQuery(s.KV, message)
 		if err != nil {
 			WriteError(conn, err)
@@ -248,10 +243,23 @@ func Writeln(conn net.Conn, b []byte) {
 	conn.Write(b)
 }
 
-func assert(cond bool, message any) {
+func assert(cond bool, message ...any) {
 	if !cond {
-		panic(fmt.Sprint("Assertion failed: ", message))
+		if len(message) > 0 {
+			fmt.Println("Assertion failed:", message)
+			os.Exit(1)
+		}
 	}
+}
+
+func isSelectStatement(s string) bool {
+	for i, c := range s {
+		if unicode.IsSpace(c) {
+			continue
+		}
+		return strings.ToLower(s[i:i+6]) == "select"
+	}
+	return false
 }
 
 func main() {
